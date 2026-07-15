@@ -1,0 +1,80 @@
+"""
+Black-Scholes closed-form option pricing.
+
+Prices European call and put options under the standard Black-Scholes
+assumptions (constant volatility, constant risk-free rate, no dividends,
+lognormal asset price, no arbitrage, continuous trading).
+"""
+
+from dataclasses import dataclass
+from math import exp, log, sqrt
+from scipy.stats import norm
+
+
+@dataclass
+class OptionParams:
+    """Container for the standard Black-Scholes inputs.
+
+    S: current underlying price
+    K: strike price
+    T: time to expiry, in years
+    r: risk-free interest rate (annualised, continuously compounded)
+    sigma: volatility of the underlying (annualised)
+    q: continuous dividend yield (default 0.0)
+    """
+    S: float
+    K: float
+    T: float
+    r: float
+    sigma: float
+    q: float = 0.0
+
+
+def _d1_d2(p: OptionParams) -> tuple[float, float]:
+    """Compute the d1 and d2 terms shared by price and Greek formulas."""
+    if p.T <= 0 or p.sigma <= 0:
+        raise ValueError("T and sigma must be strictly positive")
+
+    d1 = (log(p.S / p.K) + (p.r - p.q + 0.5 * p.sigma**2) * p.T) / (
+        p.sigma * sqrt(p.T)
+    )
+    d2 = d1 - p.sigma * sqrt(p.T)
+    return d1, d2
+
+
+def call_price(p: OptionParams) -> float:
+    """Price a European call option."""
+    d1, d2 = _d1_d2(p)
+    return p.S * exp(-p.q * p.T) * norm.cdf(d1) - p.K * exp(-p.r * p.T) * norm.cdf(d2)
+
+
+def put_price(p: OptionParams) -> float:
+    """Price a European put option via put-call parity terms."""
+    d1, d2 = _d1_d2(p)
+    return p.K * exp(-p.r * p.T) * norm.cdf(-d2) - p.S * exp(-p.q * p.T) * norm.cdf(-d1)
+
+
+def price(p: OptionParams, option_type: str = "call") -> float:
+    """Price a European option. option_type is 'call' or 'put'."""
+    if option_type == "call":
+        return call_price(p)
+    elif option_type == "put":
+        return put_price(p)
+    raise ValueError("option_type must be 'call' or 'put'")
+
+
+def put_call_parity_check(p: OptionParams, tol: float = 1e-8) -> bool:
+    """Sanity check: C - P should equal S*e^(-qT) - K*e^(-rT)."""
+    c = call_price(p)
+    put = put_price(p)
+    lhs = c - put
+    rhs = p.S * exp(-p.q * p.T) - p.K * exp(-p.r * p.T)
+    return abs(lhs - rhs) < tol
+
+
+if __name__ == "__main__":
+    # Quick sanity example: at-the-money option, 1 year to expiry
+    params = OptionParams(S=100, K=100, T=1.0, r=0.05, sigma=0.2)
+    print(f"Call price: {call_price(params):.4f}")
+    print(f"Put price:  {put_price(params):.4f}")
+    print(f"Put-call parity holds: {put_call_parity_check(params)}")

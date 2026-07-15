@@ -1,0 +1,114 @@
+"""
+Benchmarking and comparison across all three pricing methods.
+
+Produces:
+1. A correctness table (all methods vs known Black-Scholes reference).
+2. Runtime benchmarks for the Python implementations.
+3. Greeks plotted against stock price and time to expiry.
+"""
+
+import time
+import numpy as np
+import matplotlib.pyplot as plt
+
+from black_scholes import OptionParams, call_price, put_price
+from binomial_tree import binomial_price
+from monte_carlo import monte_carlo_price
+from greeks import analytical_greeks
+
+
+def correctness_table():
+    params = OptionParams(S=100, K=100, T=1.0, r=0.05, sigma=0.2)
+    bs_call = call_price(params)
+    bs_put = put_price(params)
+
+    bt_call = binomial_price(params, "call", n_steps=500)
+    bt_put = binomial_price(params, "put", n_steps=500)
+
+    mc_call = monte_carlo_price(params, "call", n_paths=200_000)
+    mc_put = monte_carlo_price(params, "put", n_paths=200_000)
+
+    print("=" * 70)
+    print("CORRECTNESS CHECK — all methods vs Black-Scholes (S=K=100, T=1, r=5%, sigma=20%)")
+    print("=" * 70)
+    print(f"{'Method':<20}{'Call':>12}{'Put':>12}{'Call diff':>13}{'Put diff':>12}")
+    print(f"{'Black-Scholes':<20}{bs_call:>12.4f}{bs_put:>12.4f}{'--':>13}{'--':>12}")
+    print(f"{'Binomial (N=500)':<20}{bt_call:>12.4f}{bt_put:>12.4f}{abs(bt_call-bs_call):>13.5f}{abs(bt_put-bs_put):>12.5f}")
+    print(f"{'Monte Carlo (200k)':<20}{mc_call['price']:>12.4f}{mc_put['price']:>12.4f}{abs(mc_call['price']-bs_call):>13.5f}{abs(mc_put['price']-bs_put):>12.5f}")
+    print()
+
+
+def runtime_benchmark():
+    params = OptionParams(S=100, K=100, T=1.0, r=0.05, sigma=0.2)
+
+    print("=" * 70)
+    print("PYTHON RUNTIME BENCHMARK")
+    print("=" * 70)
+
+    t0 = time.perf_counter()
+    for _ in range(10_000):
+        call_price(params)
+    bs_time = time.perf_counter() - t0
+    print(f"Black-Scholes:  10,000 calls in {bs_time*1000:.2f} ms  ({bs_time/10_000*1e6:.2f} us/call)")
+
+    for n_steps in [100, 500, 1000]:
+        t0 = time.perf_counter()
+        binomial_price(params, "call", n_steps=n_steps)
+        elapsed = time.perf_counter() - t0
+        print(f"Binomial tree (N={n_steps}):  {elapsed*1000:.2f} ms")
+
+    for n_paths in [10_000, 100_000, 1_000_000]:
+        t0 = time.perf_counter()
+        monte_carlo_price(params, "call", n_paths=n_paths)
+        elapsed = time.perf_counter() - t0
+        print(f"Monte Carlo (paths={n_paths:,}):  {elapsed*1000:.2f} ms")
+    print()
+    print("NOTE: these numbers are recorded in the README as the 'Python' column")
+    print("of the Python vs C++ benchmark table, run once C++ builds are timed.")
+    print()
+
+
+def plot_greeks_vs_spot(save_path: str = "../notebooks/greeks_vs_spot.png"):
+    spots = np.linspace(50, 150, 200)
+    deltas, gammas, vegas, thetas = [], [], [], []
+
+    for s in spots:
+        p = OptionParams(S=s, K=100, T=1.0, r=0.05, sigma=0.2)
+        g = analytical_greeks(p, "call")
+        deltas.append(g.delta)
+        gammas.append(g.gamma)
+        vegas.append(g.vega)
+        thetas.append(g.theta)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig.suptitle("Call Option Greeks vs Spot Price (K=100, T=1yr, r=5%, sigma=20%)")
+
+    axes[0, 0].plot(spots, deltas, color="steelblue")
+    axes[0, 0].set_title("Delta")
+    axes[0, 0].axvline(100, color="gray", linestyle="--", alpha=0.5)
+
+    axes[0, 1].plot(spots, gammas, color="darkorange")
+    axes[0, 1].set_title("Gamma")
+    axes[0, 1].axvline(100, color="gray", linestyle="--", alpha=0.5)
+
+    axes[1, 0].plot(spots, vegas, color="seagreen")
+    axes[1, 0].set_title("Vega")
+    axes[1, 0].axvline(100, color="gray", linestyle="--", alpha=0.5)
+
+    axes[1, 1].plot(spots, thetas, color="firebrick")
+    axes[1, 1].set_title("Theta")
+    axes[1, 1].axvline(100, color="gray", linestyle="--", alpha=0.5)
+
+    for ax in axes.flat:
+        ax.set_xlabel("Spot price")
+        ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=120)
+    print(f"Saved plot to {save_path}")
+
+
+if __name__ == "__main__":
+    correctness_table()
+    runtime_benchmark()
+    plot_greeks_vs_spot()

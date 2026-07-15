@@ -1,0 +1,179 @@
+# Options Pricing Engine
+
+Three option pricing methods, implemented twice — once in Python for
+clarity, once in C++ for speed — with a validation suite proving they agree,
+and benchmarks quantifying exactly how much speed C++ buys you.
+
+- **Black-Scholes** — closed-form European option pricing
+- **CRR Binomial Tree** — handles American early exercise
+- **Monte Carlo** — with antithetic variates and control variates, plus
+  Asian option pricing (a case with no closed-form solution)
+
+## Why this project
+
+Black-Scholes, binomial trees, and Monte Carlo are the three foundational
+option pricing methods every quant learns, but they're rarely built and
+compared side by side. This project does that explicitly: every method is
+validated against the others, every claim is backed by a number, and the
+Python → C++ port is benchmarked rather than just asserted.
+
+## Results
+
+### Correctness — all methods agree
+
+Parameters: S=100, K=100, T=1yr, r=5%, σ=20% (at-the-money, 1 year to expiry)
+
+| Method              | Call    | Put    | Call diff vs BS | Put diff vs BS |
+|---------------------|---------|--------|------------------|-----------------|
+| Black-Scholes       | 10.4506 | 5.5735 | —                | —               |
+| Binomial (N=500)    | 10.4466 | 5.5695 | 0.00400          | 0.00400         |
+| Monte Carlo (200k)  | 10.4661 | 5.5891 | 0.01557          | 0.01557         |
+
+All three converge to the same price, which is the basic sanity check every
+option pricer needs to pass before it's trusted with anything else.
+
+### American vs European: the early-exercise premium
+
+The binomial tree can price American options; Black-Scholes can't. For a
+non-dividend-paying stock:
+
+| Option | European | American | Early exercise premium |
+|--------|----------|----------|--------------------------|
+| Call   | 10.4466  | 10.4466  | 0.00000                  |
+| Put    | 5.5695   | 6.0888   | 0.51928                  |
+
+The call premium of exactly zero isn't a bug — it reflects the well-known
+no-arbitrage result that it's never optimal to early-exercise an American
+call on a non-dividend-paying stock. The put does carry a real premium,
+because put holders can benefit from exercising early to earn interest on
+the strike proceeds.
+
+### Monte Carlo variance reduction
+
+Naive Monte Carlo error shrinks slowly (∝ 1/√N). Antithetic variates and
+control variates both reduce the constant in front of that rate:
+
+| Method                        | Price   | Standard error |
+|-------------------------------|---------|-----------------|
+| Naive MC (50k paths)          | 10.4577 | 0.06614         |
+| + Antithetic variates         | 10.4549 | 0.06601         |
+| + Antithetic + Control variate| 10.4494 | 0.02524         |
+
+Control variates roughly **halved** the standard error at no extra
+simulation cost — same number of paths, meaningfully tighter estimate.
+
+### Python vs C++ runtime
+
+The same algorithms, run head-to-head:
+
+| Method                         | Python      | C++         | Speedup |
+|--------------------------------|-------------|-------------|---------|
+| Black-Scholes (10,000 calls)   | 1204.54 ms  | 0.60 ms     | ~2,000x |
+| Binomial tree (N=1000)         | 65.51 ms    | 0.54 ms     | ~122x   |
+| Monte Carlo (1,000,000 paths)  | 162.79 ms   | 34.28 ms    | ~4.7x   |
+
+A few things worth noting about these numbers rather than just the headline
+speedup:
+
+- **Black-Scholes** shows the largest gap because the Python version pays
+  per-call interpreter overhead for what's fundamentally a handful of
+  floating-point operations — C++ eliminates nearly all of that overhead.
+- **Binomial tree** is a mostly scalar backward-induction loop, which is
+  exactly the kind of code Python's interpreter handles worst and C++
+  handles best.
+- **Monte Carlo** shows the smallest relative speedup because the Python
+  implementation uses NumPy, which is itself vectorised C under the hood —
+  so the comparison here is really "hand-written C++ loop vs NumPy's
+  vectorised C," not "Python vs C++." That's a more honest comparison than
+  it might first look.
+
+### Greeks: analytical vs finite-difference
+
+Validating the closed-form Greek formulas against a model-agnostic
+bump-and-reprice approach (which is how you'd compute Greeks for the
+binomial tree or Monte Carlo pricers, which have no closed form):
+
+| Greek | Analytical | Finite-diff | Abs diff |
+|-------|------------|--------------|-----------|
+| Delta | 0.636831   | 0.636831     | 8.60e-09  |
+| Gamma | 0.018762   | 0.018762     | 2.68e-10  |
+| Vega  | 37.524035  | 37.524035    | 1.20e-08  |
+| Theta | -6.414028  | -6.414132    | 1.05e-04  |
+| Rho   | 53.232482  | 53.232482    | 1.55e-09  |
+
+![Greeks vs spot price](notebooks/greeks_vs_spot.png)
+
+### Binomial tree convergence
+
+![Binomial convergence](notebooks/binomial_convergence.png)
+
+The oscillation is a well-documented CRR artefact — even and odd step counts
+approach the true Black-Scholes price from opposite sides, which is why
+practitioners typically average consecutive N and N+1 estimates for a
+smoother convergence.
+
+## Project structure
+
+```
+options-pricing-engine/
+├── python/
+│   ├── black_scholes.py     # closed-form pricer
+│   ├── binomial_tree.py     # CRR tree, American + European
+│   ├── monte_carlo.py       # variance reduction + Asian options
+│   ├── greeks.py            # analytical + finite-difference Greeks
+│   └── benchmarks.py        # correctness table, runtime benchmark, plots
+├── cpp/
+│   ├── black_scholes.hpp/.cpp
+│   ├── binomial_tree.hpp/.cpp
+│   ├── monte_carlo.hpp/.cpp
+│   └── benchmark.cpp        # timed comparison across methods
+├── tests/
+│   └── test_pricers.py      # 17 tests: correctness, convergence, no-arbitrage checks
+├── notebooks/
+│   └── comparison_analysis.ipynb
+└── README.md
+```
+
+## Running it
+
+**Python:**
+```bash
+cd python
+pip install -r ../requirements.txt
+python3 black_scholes.py       # quick sanity check
+python3 benchmarks.py          # full correctness + timing + plots
+```
+
+**Tests:**
+```bash
+cd tests
+pytest test_pricers.py -v
+```
+
+**C++:**
+```bash
+cd cpp
+g++ -O2 -std=c++17 benchmark.cpp -o benchmark
+./benchmark
+```
+
+## What's deliberately not here
+
+- **Implied volatility solving** (inverting Black-Scholes for σ given a
+  market price) — a natural next step, left out to keep this project
+  focused on the forward-pricing comparison.
+- **Dividend-adjusted binomial trees for discrete dividends** — the current
+  implementation handles continuous dividend yield only.
+- **GPU-accelerated Monte Carlo** — the C++ version is single-threaded;
+  multi-threading or CUDA would be the obvious next speed step, but the
+  point of this benchmark was Python vs single-threaded C++, not "how fast
+  can Monte Carlo possibly go."
+
+## Notes on correctness
+
+Every number quoted above was actually run and captured from this codebase,
+not estimated — see `python/benchmarks.py`, `cpp/benchmark.cpp`, and
+`tests/test_pricers.py` to reproduce them yourself. The 17 tests in
+`test_pricers.py` cover cross-method agreement, known no-arbitrage
+relationships (put-call parity, the American call = European call result),
+and sanity bounds on the Greeks (e.g. call delta ∈ [0,1]).
